@@ -8,6 +8,16 @@
 #include "mini-printf.h"
 #include "minion_lib.h"
 
+#define us_wrtx (volatile int *)0x4002c000
+#define us_wrrx_pop (volatile int *)0x4002d000
+#define us_usbpull (volatile int *)0x4002e000
+#define us_ticker (volatile int *)0x40028000
+#define us_flg_data (volatile int *)0x4002c000
+#define us_pointers (volatile int *)0x4002e000
+#define led_reg (volatile int *)0x40010078
+
+void typey(void);
+
 const struct { char scan,lwr,upr; } scancode[] = {
 #include "scancode.h"
   };
@@ -19,8 +29,21 @@ int main() {
   int height = 11;
   int width = 5;
   int scroll = 0;
+  int values[10];
+  int last;
+  int pullup = 0;
+
   hid_send_string("\nBare metal HID access\n");
   printf("Hello World! "__DATE__" "__TIME__"\n");
+  printf("Magic value %x\n", *us_ticker);
+  for (i=0; i < 10;i++) {
+    values[i] = *us_ticker;
+  }
+  last = 0;
+  for (i=0; i < 10; i++) {
+    printf("[%d] value = %x delta = %x\n", i, values[i], values[i]-last);
+    last = values[i];
+  }
   hid_reg_ptr[LOWRISC_REGS_HPIX] = width;
   hid_reg_ptr[LOWRISC_REGS_VPIX] = height;
   for (i = 0; i < 32; i++)
@@ -38,13 +61,14 @@ int main() {
   for (;;)
     {
       int scan, ascii, event = *keyb_base;
+      int uin, usin, uinc, usinc, ustop;
       if (0x200 & ~event)
         {
           *keyb_base = 0; // pop FIFO
           event = *keyb_base & ~0x200;
           scan = scancode[event&~0x100].scan;
           ascii = scancode[event&~0x100].lwr;
-          // printf("Keyboard event = %X, scancode = %X, ascii = '%c'\n", event, scan, ascii);
+          printf("Keyboard event = %X, scancode = %X, ascii = '%c'\n", event, scan, ascii);
           if (0x100 & ~event) switch(scan)
             {
             case 0x50: hid_reg_ptr[LOWRISC_REGS_VPIX] = ++height; printf(" %d,%d", height, width); break;
@@ -56,7 +80,68 @@ int main() {
             default: printf("?%x", scan); break;
             }
         }
+      uin = *uart_base;
+      if (0x200 & ~uin)
+	{
+	  *(uart_base + (0x1000/sizeof(uint64_t))) = 0;
+	  uin = *uart_base;
+	  usin = *us_flg_data;
+	  ustop = *(us_flg_data+1);
+	  uinc = uin & 0x7f;
+	  if (uinc < 32) uinc='?';
+	  usinc = usin & 0x7f;
+	  if (usinc < 32) usinc='?';
+	  printf("Uart: %x (%c). Pointers %x\n", uin, uinc,
+		 *(uart_base + (0x2000/sizeof(uint64_t))));
+	  printf("US: Head %x (%c) top %x. Pointers %x %x\n", usin, usinc,
+		 ustop, *us_pointers, *(us_pointers+1));
+	  if (('A' <= uinc) && (uinc <= 'Z'))
+	    *us_wrtx = uinc;
+	  if (('a' <= uinc) && (uinc <= 'z'))
+	    *led_reg = uinc;
+	  if (uinc == 't')
+	    typey();
+	  if (uinc == '/')
+	    pullup ^= 1;
+	    *us_usbpull = pullup;
+	  if (uinc == '1')
+	    *us_wrrx_pop = 0;
+	  if (uinc == '6')
+	    for(i = 0; i < 6; i++)
+	      *us_wrtx = 'A' + i;
+	  usin = *us_flg_data;
+	  usinc = usin & 0x7f;
+	  if (usinc < 32) usinc='?';
+	  printf("US: Post %x (%c). Pointers %x %x\n", usin, usinc,
+		 *us_pointers, *(us_pointers+1));
+	}
     }
+}
+
+void typey()
+{
+  int uartin, usbin;
+
+  printf("\nTypey mode, use . to exit\n");
+  do {
+    uartin = *uart_base;
+    usbin = *us_flg_data;
+
+    if (0x200 & ~uartin) {
+      *(uart_base + (0x1000/sizeof(uint64_t))) = 0;
+      uartin = *uart_base & 0x7f;
+      *us_wrtx = uartin;
+      if (uartin == 0xd)
+	*us_wrtx = 0xa;
+    }
+    if (0x200 & ~usbin) {
+      *us_wrrx_pop = 0;
+      usbin = *us_flg_data & 0x7f;
+      printf("%c", usbin);
+      if (usbin == 0x0d)
+	printf("%c", 0x0a);
+    }
+  } while ((uartin & 0x7f) != '.');
 }
 char dos[]={
 /*-- ^@  --*/
